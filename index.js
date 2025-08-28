@@ -1,9 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const puppeteer = require("puppeteer");
+const axios = require("axios");
 
 (async () => {
-  // 1. Lê o arquivo de chaves
+  // arquivo de chaves
   const chavesPath = path.join(__dirname, "chaves.txt");
   const chaves = fs.readFileSync(chavesPath, "utf-8")
     .split("\n")
@@ -12,7 +13,7 @@ const puppeteer = require("puppeteer");
 
   console.log(`🔑 ${chaves.length} chaves carregadas.`);
 
-  // 2. Pergunta ao usuário se são entradas ou saídas
+  // entradas ou saídas?
   const readline = require("readline-sync");
   const tipo = readline.question("Digite o tipo de nota (entradas/saidas): ").toLowerCase();
   if (!["entradas", "saidas"].includes(tipo)) {
@@ -20,51 +21,63 @@ const puppeteer = require("puppeteer");
     process.exit();
   }
 
-  // 3. Abre o navegador
+  // navegador
   const browser = await puppeteer.launch({
-    headless: false, // true = sem interface, false = com interface (pra testar)
+    headless: true,
     defaultViewport: null,
     args: ["--start-maximized"]
   });
 
   const page = await browser.newPage();
 
-  // 4. Define a pasta de downloads
+  // pasta de download ou é saidas ou entradas
   const downloadPath = path.join(__dirname, tipo === "saidas" ? "XML_SAIDAS" : "XML_ENTRADAS");
   fs.mkdirSync(downloadPath, { recursive: true });
 
-  await page._client().send("Page.setDownloadBehavior", {
-    behavior: "allow",
-    downloadPath: downloadPath,
-  });
-
   console.log(`📁 Downloads serão salvos em: ${downloadPath}`);
 
-  // 5. Processa cada chave
+  // carrega a chave
   for (let chave of chaves) {
     console.log(`📥 Baixando XML da chave: ${chave}`);
     try {
-      // Abre a página de consulta do Meu Danfe
+      // entra no Meu Danfe
       await page.goto("https://meudanfe.com.br/consulta", { waitUntil: "networkidle2" });
 
-      // Digita a chave
-      await page.type("input[name='chave']", chave, { delay: 50 });
+      await page.waitForSelector("input[name='searchTxt']", { timeout: 5000 });
 
-      // Clica no botão "Consultar"
+      // digita a chave
+      await page.type("input[name='searchTxt']", chave, { delay: 50 });
+
+      // botão "Buscar"
       await Promise.all([
-        page.click("button[type='submit']"),
+        page.click("#searchBtn"),
         page.waitForNavigation({ waitUntil: "networkidle2" })
       ]);
 
-      // Baixa o XML
-      const btnSelector = "a.btn.btn-primary[href*='xml']";
-      await page.waitForSelector(btnSelector, { timeout: 10000 });
-      await page.click(btnSelector);
+      // espera o botão de download aparecer
+      await page.waitForSelector("#downloadXmlBtn", { timeout: 10000 });
 
-      console.log(`✅ XML da chave ${chave} solicitado.`);
+      // pega o link do botão e baixa o arquivo com axios (desisti de usar o puppeteer pq é mais complicado)
+      const downloadUrl = await page.$eval("#downloadXmlBtn", el => el.href);
+      const response = await axios({
+        method: 'get',
+        url: downloadUrl,
+        responseType: 'stream'
+      });
 
-      // Espera 1s para o download iniciar
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const filePath = path.join(downloadPath, `${chave}.xml`);
+      const writer = fs.createWriteStream(filePath);
+
+      response.data.pipe(writer);
+
+      await new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+
+      console.log(`✅ XML ${chave}.xml salvo em: ${downloadPath}`);
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
 
     } catch (err) {
       console.error(`❌ Erro na chave ${chave}:`, err.message);
